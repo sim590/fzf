@@ -17,6 +17,9 @@
 # --- Default Environment Variables ---
 # These can be overridden in your config.nu or environment.
 # Example: $env.FZF_COMPLETION_TRIGGER = "!<TAB>"
+# 
+# You can also set the trigger to empty
+# $env.FZF_COMPLETION_TRIGGER = ""
 
 # - $env.FZF_TMUX                 (default: 0)
 # - $env.FZF_TMUX_OPTS            (default: empty)
@@ -271,10 +274,14 @@ def __fzf_generic_path_completion_nu [ prefix:           string       # The text
 }
 
 # Specific path completion wrapper
-def _fzf_path_completion_nu [prefix: string] {
+def _fzf_path_completion_nu [prefix: string, preview: string = ""] {
   # Zsh args: base, lbuf, _fzf_compgen_path, "-m", "", " "
   # Nu: prefix, empty command name (use find), ["-m"], "", " "
-  __fzf_generic_path_completion_nu $prefix "" ["-m"] ""
+  if ($preview == "") {
+    __fzf_generic_path_completion_nu $prefix "" ["-m"] ""
+  } else {
+    __fzf_generic_path_completion_nu $prefix "" ["-m", "--preview", $preview] ""
+  }
 }
 
 # General completion helper for commands that feed a list to fzf
@@ -381,14 +388,15 @@ def _fzf_list_pacman_packages [--installed] {
 def _fzf_complete_pacman_nu [ prefix:                    string
                             , input_line_before_trigger: string
                             ] {
+  let fzf_opts = ["-m", "--preview", "pacman -Si {}", "--prompt", "Package > "]
   let command_words = $input_line_before_trigger | split row ' '
   let sub_command   = $command_words | skip 1 | first
   match $sub_command {
-    $s if $s =~ "-S[bcdgilpqrsuvwy]*"     => ( _fzf_complete_nu $prefix {_fzf_list_pacman_packages            } ["-m"] )
-    $s if $s =~ "-Q[bcdegiklmnpqrstuv]*"  => ( _fzf_complete_nu $prefix {_fzf_list_pacman_packages --installed} ["-m"] )
-    $s if $s =~ "-F[blqrvxy]*"            => ( _fzf_complete_nu $prefix {_fzf_list_pacman_packages            } ["-m"] )
-    $s if $s =~ "-R[bcdnprsuv]*"          => ( _fzf_complete_nu $prefix {_fzf_list_pacman_packages --installed} ["-m"] )
-    _                                     => (                                                                         )
+    $s if $s =~ "-S[bcdgilpqrsuvwy]*"     => ( _fzf_complete_nu $prefix {_fzf_list_pacman_packages            } $fzf_opts )
+    $s if $s =~ "-Q[bcdegiklmnpqrstuv]*"  => ( _fzf_complete_nu $prefix {_fzf_list_pacman_packages --installed} $fzf_opts )
+    $s if $s =~ "-F[blqrvxy]*"            => ( _fzf_complete_nu $prefix {_fzf_list_pacman_packages            } $fzf_opts )
+    $s if $s =~ "-R[bcdnprsuv]*"          => ( _fzf_complete_nu $prefix {_fzf_list_pacman_packages --installed} $fzf_opts )
+    _                                     => (  )
   }
 }
 
@@ -459,32 +467,45 @@ def _fzf_complete_kill_nu [query: string] {
 
 # This function is registered with Nushell's external completion system.
 # It gets called when Tab is pressed.
-let fzf_external_completer = {|spans|
+def _fzf_external_completer [spans: list<string>] {
   let trigger: string = $env.FZF_COMPLETION_TRIGGER? | default '**'
 
-  if ($trigger | is-empty)     { return null } # Cannot work with empty trigger
   if (($spans | length ) == 0) { return null } # Nothing to complete
 
   let last_span = $spans | last
   let line_before_cursor = $spans | str join ' ' # Reconstruct line for context
 
-  if ($last_span | str ends-with $trigger) {
-    # --- Trigger Found ---
-
-    let cmd_word = ($spans | first | default "")
+  if ($trigger == "") or ($last_span | str ends-with $trigger) {
+    # --- Trigger empty or found ---
 
     # Calculate the prefix (part before the trigger in the last span)
-    let prefix = $last_span | str substring 0..(-1 * ($trigger | str length) - 1)
+    mut prefix = $last_span
+    if ($trigger | is-not-empty) {
+      $prefix = $last_span | str substring 0..(-1 * ($trigger | str length) - 1)
+    }
+
+    # Skip sudo if it is the first "command"
+    let m_spans = if ($spans | first) == "sudo" {
+      $spans | skip 1
+    } else {
+      $spans
+    }
 
     # Reconstruct the line content *before* the trigger for context
     # This is an approximation based on spans
-    let line_without_trigger = $spans | take (($spans | length) - 1) | append $prefix | str join ' '
+    let line_without_trigger = (if ($trigger == "") {
+      $m_spans | str join ' '
+    } else {
+      $m_spans | skip 1 | take (($spans | length) - 1) | append $prefix | str join ' '
+    })
 
     # --- Dispatch to Completer ---
     mut completion_results = [] # Will hold the list of strings from the completer
 
-    match $cmd_word {
-      "pacman"                          => { $completion_results = (_fzf_complete_pacman_nu $prefix $line_without_trigger) }
+    match ($m_spans | first | default "") {
+      "pacman" | "paru"                 => {
+        $completion_results = (_fzf_complete_pacman_nu $prefix $line_without_trigger)
+      }
       "pass"                            => { $completion_results = (_fzf_complete_pass_nu $prefix)                         }
       "ssh" | "scp" | "sftp" | "telnet" => { $completion_results = (_fzf_complete_ssh_nu $prefix $line_without_trigger)    }
       # "export" | "printenv"             => { $completion_results = (_fzf_complete_export_nu $prefix)                    }
@@ -506,9 +527,9 @@ let fzf_external_completer = {|spans|
     # We don't need to manually add spaces; Nushell handles that.
     $completion_results # Return the list directly
   } else {
-    # --- Trigger Not Found ---
-    # Return null to let Nushell fall back to other completers (e.g., default file completion).
-    null
+  #   # --- Trigger Not Found ---
+  #   # Return null to let Nushell fall back to other completers (e.g., default file completion).
+     null
   }
 }
 
@@ -520,7 +541,7 @@ let previous_external_completer = $env.config? | get completions? | get external
 # Define the new wrapper completer
 let fzf_wrapper_completer = {|spans|
   # 1. Try the FZF completer logic first
-  let fzf_result = do $fzf_external_completer $spans
+  let fzf_result = _fzf_external_completer $spans
 
   # 2. If FZF returned a result (a list, even an empty one), return it.
   #    `null` means FZF didn't handle it because the trigger wasn't present.
