@@ -38,6 +38,20 @@ $env.FZF_COMPLETION_DIR_COMMANDS = $env.FZF_COMPLETION_DIR_COMMANDS? | default [
 
 # --- Helper Functions ---
 
+# Temporary backward compatibility fix for Nushell<0.114.0
+# TODO: remove this in favor of "str lowercase" once 0.114.0 is the minimum supported version
+let __fzf_str_lowercase_impl = if ((version | get major) == 0 and (version | get minor) < 114) {
+  "str downcase"
+} else {
+  "str lowercase"
+}
+
+# Temporary backward compatibility fix for Nushell<0.114.0
+# TODO: remove this in favor of "str lowercase" once 0.114.0 is the minimum supported version
+def __fzf_str_lowercase []: string -> string {
+  $in | nu --commands $"\"($in)\" | ($__fzf_str_lowercase_impl)"
+}
+
 # Helper to build default fzf options list
 def __fzf_defaults_completion [prepend: string, append: string]: nothing -> string {
   let base = $"--height ($env.FZF_TMUX_HEIGHT? | default '40%') --min-height 20+ --bind=ctrl-z:ignore ($prepend)"
@@ -116,7 +130,7 @@ def __fzf_list_hosts [] {
     (
       # Process ssh config files
       $ssh_configs | append $ssh_configs_d | append $ssh_config_global
-                   | where {|it| ($it | str downcase | str starts-with 'host') or ($it | str downcase | str starts-with 'hostname') }
+                   | where {|it| ($it | __fzf_str_lowercase | str starts-with 'host') or ($it | __fzf_str_lowercase | str starts-with 'hostname') }
                    | parse --regex '^\s*host(?:name)?\s+(?<hosts>.+)' # Extract hosts after keyword
                    | default { hosts: null }                          # Handle lines that don't match regex
                    | get hosts
